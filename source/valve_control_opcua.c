@@ -83,64 +83,114 @@ const char* Valve_StateToString(ValveState state) {
 
 // Valve State Update Logic
 void Valve_Update(OnOffValve *valve, uint32_t cycle_time_ms) {
-    // Check if all solenoids are energized
+    // ========= SOLENOID LOGIC =========
     bool all_solenoids_energized = true;
-    for (uint32_t i = 0; i < valve->param.solenoid_count; i++) {
-        if (!valve->io.solenoid_cmds[i]) {
-            all_solenoids_energized = false;
-            break;
+    for (int i = 0; i < valve->param.solenoid_count; i++) {
+        valve->state.solenoids_energized[i] = valve->io.solenoid_cmds[i];
+
+        if (i == SOLENOID_ESD && valve->param.esd_latching && valve->state.esd_latched) {
+            valve->state.solenoids_energized[i] = false;
         }
+        if (!valve->state.solenoids_energized[i]) {
+            all_solenoids_energized = false;
+        }
+        valve->io.solenoid_outputs[i] = valve->state.solenoids_energized[i];
     }
 
-    // Update state based on current commands and inputs
+    if (valve->io.reset_cmd && valve->param.esd_latching) {
+        valve->state.esd_latched = false;
+    }
+
+    // ========= STATE MACHINE =========
     switch (valve->state.current_state) {
         case VALVE_CLOSED:
+            valve->io.valve_moving = false;
+            valve->io.ls_open = false; // Limit switch open should be false in CLOSED state
+            valve->io.ls_close = true; // Limit switch close should be true in CLOSED state
+
             if (all_solenoids_energized) {
                 valve->state.current_state = VALVE_OPENING;
                 valve->state.state_timer = 0;
                 valve->io.valve_moving = true;
+
+                // Set LimitSwitchClose to false when leaving CLOSED state
+                valve->io.ls_close = false;
             }
             break;
 
         case VALVE_OPENING:
+            valve->io.valve_moving = true;
             valve->state.state_timer += cycle_time_ms;
+
+            if (!all_solenoids_energized) {
+                valve->state.current_state = VALVE_CLOSING;
+                valve->state.state_timer = valve->param.travel_time_ms - valve->state.state_timer;
+                break;
+            }
+
             if (valve->state.state_timer >= valve->param.travel_time_ms) {
                 valve->state.current_state = VALVE_OPEN;
-                valve->io.valve_moving = false;
+                valve->state.state_timer = 0;
+
+                // Set LimitSwitchOpen to true when reaching OPEN state
+                valve->io.ls_open = true;
+                valve->io.ls_close = false; // Ensure LimitSwitchClose is false
             }
             break;
 
         case VALVE_OPEN:
+            valve->io.valve_moving = false;
+            valve->io.ls_open = true; // Limit switch open should be true in OPEN state
+            valve->io.ls_close = false; // Limit switch close should be false in OPEN state
+
             if (!all_solenoids_energized) {
                 valve->state.current_state = VALVE_CLOSING;
                 valve->state.state_timer = 0;
                 valve->io.valve_moving = true;
+
+                // Set LimitSwitchOpen to false when leaving OPEN state
+                valve->io.ls_open = false;
             }
             break;
 
         case VALVE_CLOSING:
+            valve->io.valve_moving = true;
             valve->state.state_timer += cycle_time_ms;
+
             if (valve->state.state_timer >= valve->param.travel_time_ms) {
                 valve->state.current_state = VALVE_CLOSED;
-                valve->io.valve_moving = false;
+                valve->state.state_timer = 0;
+
+                // Set LimitSwitchClose to true when reaching CLOSED state
+                valve->io.ls_close = true;
+                valve->io.ls_open = false; // Ensure LimitSwitchOpen is false
             }
             break;
 
         case VALVE_FAULT:
-            if (valve->io.reset_cmd) {
-                valve->state.current_state = VALVE_CLOSED;
-                valve->io.fault = false;
-                valve->io.reset_cmd = false;
+            valve->io.valve_moving = false;
+            valve->io.ls_open = false; // Fault state: both limit switches should be false
+            valve->io.ls_close = false;
+
+            for (int i = 0; i < valve->param.solenoid_count; i++) {
+                valve->io.solenoid_outputs[i] = false;
             }
             break;
+    }
 
-        default:
-            valve->state.current_state = VALVE_FAULT;
-            valve->io.fault = true;
-            break;
+    // ========= FAULT DETECTION =========
+    valve->io.fault = false;
+    if (valve->io.ls_open && valve->io.ls_close) {
+        valve->state.current_state = VALVE_FAULT;
+        valve->io.fault = true;
+    }
+
+    if ((valve->state.current_state == VALVE_OPENING || valve->state.current_state == VALVE_CLOSING) &&
+        valve->state.state_timer > valve->param.travel_time_ms + 1000) { // Allow 1-second tolerance
+        valve->state.current_state = VALVE_FAULT;
+        valve->io.fault = true;
     }
 }
-
 // Value Callback for Solenoid Nodes
 static void onValueChanged(UA_Server *server,
                            const UA_NodeId *sessionId, void *sessionContext,
@@ -322,33 +372,44 @@ int main(void) {
    // }
 
     // Run the server in a custom loop
-    while (running) {
-        // Process the server's main loop
-        UA_Server_run_iterate(server, true);
+  while (running) {
+    // Process the server's main loop
+    UA_Server_run_iterate(server, true);
 
-        // Update the valve state periodically
-        Valve_Update(&valve, 100);
+    // Update the valve state periodically
+    Valve_Update(&valve, 100);
 
-        // Optionally, log the current state for debugging
-        printf("Valve State: %s, Moving: %d, Fault: %d\n",
-               Valve_StateToString(valve.state.current_state),
-               valve.io.valve_moving,
-               valve.io.fault);
+    // Optionally, log the current state for debugging
+    printf("Valve State: %s, Moving: %d, Fault: %d, LimitSwitchOpen: %d, LimitSwitchClose: %d\n",
+           Valve_StateToString(valve.state.current_state),
+           valve.io.valve_moving,
+           valve.io.fault,
+           valve.io.ls_open,
+           valve.io.ls_close);
 
-        // Update the ValveState node in the OPC UA server
-        UA_String stateString = UA_STRING_ALLOC(Valve_StateToString(valve.state.current_state));
-        UA_Variant value;
-        UA_Variant_init(&value);
-        UA_Variant_setScalar(&value, &stateString, &UA_TYPES[UA_TYPES_STRING]);
-        UA_Server_writeValue(server, UA_NODEID_STRING(1, "ValveState"), value);
-        UA_String_clear(&stateString);
+// Read the current value of TravelTime from the OPC UA server
+    UA_Variant travelTimeVariant;
+    UA_Variant_init(&travelTimeVariant);
+    UA_StatusCode readStatus = UA_Server_readValue(server, UA_NODEID_STRING(1, "TravelTime"), &travelTimeVariant);
+    if (readStatus == UA_STATUSCODE_GOOD && UA_Variant_isScalar(&travelTimeVariant) &&
+        travelTimeVariant.type == &UA_TYPES[UA_TYPES_UINT32]) {
+        valve.param.travel_time_ms = *(uint32_t *)travelTimeVariant.data;
+    } else {
+        // Fallback to default value if reading fails
+        valve.param.travel_time_ms = 5000; // Default: 5 seconds
+    }
+    UA_Variant_clear(&travelTimeVariant);
 
 
+    // Update the ValveState node in the OPC UA server
+    UA_String stateString = UA_STRING_ALLOC(Valve_StateToString(valve.state.current_state));
+    UA_Variant value;
+    UA_Variant_init(&value);
+    UA_Variant_setScalar(&value, &stateString, &UA_TYPES[UA_TYPES_STRING]);
+    UA_Server_writeValue(server, UA_NODEID_STRING(1, "ValveState"), value);
+    UA_String_clear(&stateString);
 
-
-
-
-  // Update the ValveMoving node in the OPC UA server
+    // Update the ValveMoving node in the OPC UA server
     UA_Boolean moving = valve.io.valve_moving;
     UA_Variant_init(&value);
     UA_Variant_setScalar(&value, &moving, &UA_TYPES[UA_TYPES_BOOLEAN]);
@@ -360,20 +421,19 @@ int main(void) {
     UA_Variant_setScalar(&value, &ls_open, &UA_TYPES[UA_TYPES_BOOLEAN]);
     UA_Server_writeValue(server, UA_NODEID_STRING(1, "LimitSwitchOpen"), value);
 
-      // Update the LimitSwitchClose node in the OPC UA server
+    // Update the LimitSwitchClose node in the OPC UA server
     UA_Boolean ls_close = valve.io.ls_close;
     UA_Variant_init(&value);
     UA_Variant_setScalar(&value, &ls_close, &UA_TYPES[UA_TYPES_BOOLEAN]);
     UA_Server_writeValue(server, UA_NODEID_STRING(1, "LimitSwitchClose"), value);
 
-
-        // Sleep for a fixed cycle time (e.g., 100 ms)
+    // Sleep for a fixed cycle time (e.g., 100 ms)
 #ifdef _WIN32
-        Sleep(100); // Sleep for 100 milliseconds (Windows)
+    Sleep(100); // Sleep for 100 milliseconds (Windows)
 #else
-        usleep(100 * 1000); // Sleep for 100 milliseconds (Linux/macOS)
+    usleep(100 * 1000); // Sleep for 100 milliseconds (Linux/macOS)
 #endif
-    }
+}
 
     // Deregister the server from the discovery server (optional but recommended)
  //   UA_Server_deregisterDiscovery(server, NULL, discoveryServerUrl);
