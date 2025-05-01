@@ -162,6 +162,7 @@ static void addVariableWithCallback(UA_Server *server, UA_NodeId parentNode,
 }
 
 static void addFlowControlValveObject(UA_Server *server) {
+    // Add the main FlowControlValve object
     UA_Server_addObjectNode(server, UA_NODEID_STRING(1, "FlowControlValve"),
         UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER),
         UA_NODEID_NUMERIC(0, UA_NS0ID_ORGANIZES),
@@ -169,6 +170,7 @@ static void addFlowControlValveObject(UA_Server *server) {
         UA_NODEID_NUMERIC(0, UA_NS0ID_BASEOBJECTTYPE),
         UA_ObjectAttributes_default, NULL, NULL);
 
+    // --- Configuration Folder (Writable Variables) ---
     UA_Server_addObjectNode(server, UA_NODEID_STRING(1, "Configuration"),
         UA_NODEID_STRING(1, "FlowControlValve"),
         UA_NODEID_NUMERIC(0, UA_NS0ID_HASCOMPONENT),
@@ -176,11 +178,16 @@ static void addFlowControlValveObject(UA_Server *server) {
         UA_NODEID_NUMERIC(0, UA_NS0ID_FOLDERTYPE),
         UA_ObjectAttributes_default, NULL, NULL);
 
-    addVariableWithCallback(server, UA_NODEID_STRING(1, "Configuration"), "ControlSignal", "Control Signal", &flow_control_valve.config.control_signal, &UA_TYPES[UA_TYPES_DOUBLE]);
-    addVariableWithCallback(server, UA_NODEID_STRING(1, "Configuration"), "UpstreamPressure", "Upstream Pressure", &flow_control_valve.config.upstream_pressure, &UA_TYPES[UA_TYPES_DOUBLE]);
-    addVariableWithCallback(server, UA_NODEID_STRING(1, "Configuration"), "Kv", "Kv", &flow_control_valve.config.kv, &UA_TYPES[UA_TYPES_DOUBLE]);
-    addVariableWithCallback(server, UA_NODEID_STRING(1, "Configuration"), "ValveCharacteristic", "Valve Characteristic", &flow_control_valve.config.valve_characteristic, &UA_TYPES[UA_TYPES_INT32]);
+    addVariableWithCallback(server, UA_NODEID_STRING(1, "Configuration"), "ControlSignal", "Control Signal", 
+                          &flow_control_valve.config.control_signal, &UA_TYPES[UA_TYPES_DOUBLE]);
+    addVariableWithCallback(server, UA_NODEID_STRING(1, "Configuration"), "UpstreamPressure", "Upstream Pressure", 
+                          &flow_control_valve.config.upstream_pressure, &UA_TYPES[UA_TYPES_DOUBLE]);
+    addVariableWithCallback(server, UA_NODEID_STRING(1, "Configuration"), "Kv", "Kv", 
+                          &flow_control_valve.config.kv, &UA_TYPES[UA_TYPES_DOUBLE]);
+    addVariableWithCallback(server, UA_NODEID_STRING(1, "Configuration"), "ValveCharacteristic", "Valve Characteristic", 
+                          &flow_control_valve.config.valve_characteristic, &UA_TYPES[UA_TYPES_INT32]);
 
+    // --- Errors Folder (Writable Variables) ---
     UA_Server_addObjectNode(server, UA_NODEID_STRING(1, "Errors"),
         UA_NODEID_STRING(1, "FlowControlValve"),
         UA_NODEID_NUMERIC(0, UA_NS0ID_HASCOMPONENT),
@@ -188,11 +195,16 @@ static void addFlowControlValveObject(UA_Server *server) {
         UA_NODEID_NUMERIC(0, UA_NS0ID_FOLDERTYPE),
         UA_ObjectAttributes_default, NULL, NULL);
 
-    addVariableWithCallback(server, UA_NODEID_STRING(1, "Errors"), "StictionThreshold", "Stiction Threshold", &flow_control_valve.error.stiction_threshold, &UA_TYPES[UA_TYPES_DOUBLE]);
-    addVariableWithCallback(server, UA_NODEID_STRING(1, "Errors"), "DeadTime", "Dead Time (s)", &flow_control_valve.error.dead_time_seconds, &UA_TYPES[UA_TYPES_DOUBLE]);
-    addVariableWithCallback(server, UA_NODEID_STRING(1, "Errors"), "Hysteresis", "Hysteresis (%)", &flow_control_valve.error.hysteresis_percent, &UA_TYPES[UA_TYPES_DOUBLE]);
-    addVariableWithCallback(server, UA_NODEID_STRING(1, "Errors"), "PositionerError", "Positioner Error (%)", &flow_control_valve.error.positioner_error_percent, &UA_TYPES[UA_TYPES_DOUBLE]);
+    addVariableWithCallback(server, UA_NODEID_STRING(1, "Errors"), "StictionThreshold", "Stiction Threshold", 
+                          &flow_control_valve.error.stiction_threshold, &UA_TYPES[UA_TYPES_DOUBLE]);
+    addVariableWithCallback(server, UA_NODEID_STRING(1, "Errors"), "DeadTime", "Dead Time (s)", 
+                          &flow_control_valve.error.dead_time_seconds, &UA_TYPES[UA_TYPES_DOUBLE]);
+    addVariableWithCallback(server, UA_NODEID_STRING(1, "Errors"), "Hysteresis", "Hysteresis (%)", 
+                          &flow_control_valve.error.hysteresis_percent, &UA_TYPES[UA_TYPES_DOUBLE]);
+    addVariableWithCallback(server, UA_NODEID_STRING(1, "Errors"), "PositionerError", "Positioner Error (%)", 
+                          &flow_control_valve.error.positioner_error_percent, &UA_TYPES[UA_TYPES_DOUBLE]);
 
+    // --- Status Folder (Read-Only + Subscriptions) ---
     UA_Server_addObjectNode(server, UA_NODEID_STRING(1, "Status"),
         UA_NODEID_STRING(1, "FlowControlValve"),
         UA_NODEID_NUMERIC(0, UA_NS0ID_HASCOMPONENT),
@@ -200,15 +212,39 @@ static void addFlowControlValveObject(UA_Server *server) {
         UA_NODEID_NUMERIC(0, UA_NS0ID_FOLDERTYPE),
         UA_ObjectAttributes_default, NULL, NULL);
 
-    UA_VariableAttributes statusAttr = UA_VariableAttributes_default;
-    statusAttr.displayName = UA_LOCALIZEDTEXT("en-US", "ValveOpening");
-    statusAttr.accessLevel = UA_ACCESSLEVELMASK_READ;
-    UA_Variant_setScalar(&statusAttr.value, &flow_control_valve.state.valve_opening, &UA_TYPES[UA_TYPES_DOUBLE]);
-    UA_Server_addVariableNode(server, UA_NODEID_STRING(1, "ValveOpening"), UA_NODEID_STRING(1, "Status"), UA_NODEID_NUMERIC(0, UA_NS0ID_HASCOMPONENT), UA_QUALIFIEDNAME(1, "ValveOpening"), UA_NODEID_NUMERIC(0, UA_NS0ID_BASEDATAVARIABLETYPE), statusAttr, NULL, NULL);
+    // ValveOpening with subscription support
+    UA_VariableAttributes valveOpeningAttr = UA_VariableAttributes_default;
+    valveOpeningAttr.displayName = UA_LOCALIZEDTEXT("en-US", "ValveOpening");
+    valveOpeningAttr.accessLevel = UA_ACCESSLEVELMASK_READ;
+    valveOpeningAttr.userAccessLevel = UA_ACCESSLEVELMASK_READ;
+    valveOpeningAttr.minimumSamplingInterval = 100.0; // 100ms update rate for subscriptions
+    valveOpeningAttr.dataType = UA_TYPES[UA_TYPES_DOUBLE].typeId;
+    UA_Variant_setScalar(&valveOpeningAttr.value, &flow_control_valve.state.valve_opening, &UA_TYPES[UA_TYPES_DOUBLE]);
+    
+    UA_NodeId valveOpeningNodeId = UA_NODEID_STRING(1, "ValveOpening");
+    UA_Server_addVariableNode(server, valveOpeningNodeId,
+        UA_NODEID_STRING(1, "Status"),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_HASCOMPONENT),
+        UA_QUALIFIEDNAME(1, "ValveOpening"),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_BASEDATAVARIABLETYPE),
+        valveOpeningAttr, NULL, NULL);
 
-    statusAttr.displayName = UA_LOCALIZEDTEXT("en-US", "Flow");
-    UA_Variant_setScalar(&statusAttr.value, &flow_control_valve.state.flow, &UA_TYPES[UA_TYPES_DOUBLE]);
-    UA_Server_addVariableNode(server, UA_NODEID_STRING(1, "Flow"), UA_NODEID_STRING(1, "Status"), UA_NODEID_NUMERIC(0, UA_NS0ID_HASCOMPONENT), UA_QUALIFIEDNAME(1, "Flow"), UA_NODEID_NUMERIC(0, UA_NS0ID_BASEDATAVARIABLETYPE), statusAttr, NULL, NULL);
+    // Flow with subscription support
+    UA_VariableAttributes flowAttr = UA_VariableAttributes_default;
+    flowAttr.displayName = UA_LOCALIZEDTEXT("en-US", "Flow");
+    flowAttr.accessLevel = UA_ACCESSLEVELMASK_READ;
+    flowAttr.userAccessLevel = UA_ACCESSLEVELMASK_READ;
+    flowAttr.minimumSamplingInterval = 100.0; // 100ms update rate
+    flowAttr.dataType = UA_TYPES[UA_TYPES_DOUBLE].typeId;
+    UA_Variant_setScalar(&flowAttr.value, &flow_control_valve.state.flow, &UA_TYPES[UA_TYPES_DOUBLE]);
+    
+    UA_NodeId flowNodeId = UA_NODEID_STRING(1, "Flow");
+    UA_Server_addVariableNode(server, flowNodeId,
+        UA_NODEID_STRING(1, "Status"),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_HASCOMPONENT),
+        UA_QUALIFIEDNAME(1, "Flow"),
+        UA_NODEID_NUMERIC(0, UA_NS0ID_BASEDATAVARIABLETYPE),
+        flowAttr, NULL, NULL);
 }
 
 int main(void) {
