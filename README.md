@@ -1,4 +1,4 @@
-# Process-Control-equpment-Simulations
+# Process-Control-equipment-Simulations
  OPCUA Process Control Equipment library
  Currently consist of 
 
